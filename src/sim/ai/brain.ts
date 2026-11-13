@@ -12,7 +12,7 @@ export function newAiState(): AiState {
     path: [], repathT: rnd() * 0.5, shotAngle: null, aimT: rnd() * 0.2, jitter: 0,
     fireDelay: 1.0 + rnd() * 1.2, fireRollT: 0, mineCd: 1 + rnd() * 2,
     fleeT: 0, fleeFrom: null, threatId: 0, threatT: 0, threatDodge: false,
-    lastTarget: null, targetVel: { x: 0, y: 0 }, idleT: 0,
+    lastTarget: null, targetVel: { x: 0, y: 0 }, idleT: 0, strafeDir: rnd() < 0.5 ? 1 : -1, strafeT: 0,
     intent: { mx: 0, my: 0, move: false, aim: 0, fire: false, mine: false },
   };
 }
@@ -60,6 +60,45 @@ export function traceShot(w: World, self: Tank, angle: number, bounces: number):
   return 'none';
 }
 
+interface Traj { ownerId: number; age: number; pts: Vec2[] }
+const TRAJ_STEP = 0.05;
+const TRAJ_STEPS = 22; // 約 1.1 秒先まで
+let trajCache: { w: World; tick: number; list: Traj[] } | null = null;
+
+/** 全弾の未来の軌道を跳弾込みで予測する（ティックごとに 1 回だけ計算して共有） */
+function trajectories(w: World): Traj[] {
+  if (trajCache && trajCache.w === w && trajCache.tick === w.tick) return trajCache.list;
+  const list: Traj[] = [];
+  for (const b of w.bullets) {
+    const c: Bullet = { ...b, pos: { ...b.pos }, vel: { ...b.vel } };
+    const pts: Vec2[] = [];
+    for (let i = 0; i < TRAJ_STEPS; i++) {
+      if (stepBullet(w.stage, c, TRAJ_STEP) === 'dead') break;
+      pts.push({ x: c.pos.x, y: c.pos.y });
+    }
+    list.push({ ownerId: b.ownerId, age: b.age, pts });
+  }
+  trajCache = { w, tick: w.tick, list };
+  return list;
+}
+
+/** 戦車が dir 方向へ speed で動き続けたとき、予測弾との最小の余裕（負なら被弾）。dir=null で静止 */
+function clearance(trajs: Traj[], selfId: number, from: Vec2, dir: Vec2 | null, speed: number): number {
+  let best = Infinity;
+  const r = TANK_RADIUS + BULLET_RADIUS;
+  for (const tr of trajs) {
+    if (tr.ownerId === selfId && tr.age < 0.35) continue;
+    for (let i = 0; i < tr.pts.length; i++) {
+      const t = (i + 1) * TRAJ_STEP;
+      const qx = dir ? from.x + dir.x * speed * t : from.x;
+      const qy = dir ? from.y + dir.y * speed * t : from.y;
+      const d = Math.hypot(tr.pts[i].x - qx, tr.pts[i].y - qy) - r;
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
 /** 戦車が通れるタイルだけのグリッド BFS。dist/prev を返す */
 function bfs(st: Stage, sx: number, sy: number) {
   const n = st.w * st.h;
@@ -91,24 +130,35 @@ function planPath(w: World, t: Tank, target: Tank | null): Vec2[] {
   const sx = clamp(Math.floor(t.pos.x), 0, st.w - 1);
   const sy = clamp(Math.floor(t.pos.y), 0, st.h - 1);
   const { d, prev, reach } = bfs(st, sx, sy);
+  const center = (c: number): Vec2 => ({ x: (c % st.w) + 0.5, y: ((c / st.w) | 0) + 0.5 });
   let goal = -1;
-  const tIdx = target ? Math.floor(target.pos.y) * st.w + Math.floor(target.pos.x) : -1;
-  if (target && tIdx >= 0 && d[tIdx] >= 0 && rnd() < a.aggression) {
-    goal = tIdx;
-  } else if (reach.length > 1) {
-    // ランダムな目的地。逃げ腰なら標的から遠いものを選ぶ
+  if (reach.length > 1) {
+    const hunt = target && rnd() < clamp(0.4 + a.aggression * 0.7, 0.1, 1);
     let bestScore = -Infinity;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 28; i++) {
       const c = reach[1 + Math.floor(rnd() * (reach.length - 1))];
-      let s = rnd();
-      if (target && a.aggression < 0) s += (-a.aggression * dist({ x: (c % st.w) + 0.5, y: ((c / st.w) | 0) + 0.5 }, target.pos)) / 8;
-      if (s > bestScore) { bestScore = s; goal = c; }
+      const p = center(c);
+      let sc = rnd() * 0.8;
+      if (target) {
+        const dt = dist(p, target.pos);
+        const see = hasLine(st, p, target.pos);
+        if (a.aggression < 0) {
+          sc += dt * 0.25 + (see ? -3 : 1.5); // 臆病：遠く・見えない場所へ
+        } else if (hunt) {
+          // 追跡：撃てる位置（見通しがあり、ほどよい距離）を目指す。近いほど良い
+          sc += (see ? 3 : 0) - Math.abs(dt - Math.max(a.keepDist, 2.5)) * 0.5 - d[c] * 0.12;
+        } else {
+          sc -= dt * 0.05 * a.aggression; // 巡回：やや自機寄り
+        }
+      }
+      if (sc > bestScore) { bestScore = sc; goal = c; }
     }
+    // 追跡中で自機が遠い・見えないときは、自機の位置そのものも候補にする（確実に詰める）
+    const tIdx = target ? Math.floor(target.pos.y) * st.w + Math.floor(target.pos.x) : -1;
+    if (hunt && tIdx >= 0 && d[tIdx] >= 0 && !hasLine(st, t.pos, target!.pos) && rnd() < 0.5) goal = tIdx;
   }
   const path: Vec2[] = [];
-  for (let c = goal; c >= 0 && c !== sy * st.w + sx; c = prev[c]) {
-    path.push({ x: (c % st.w) + 0.5, y: ((c / st.w) | 0) + 0.5 });
-  }
+  for (let c = goal; c >= 0 && c !== sy * st.w + sx; c = prev[c]) path.push(center(c));
   return path.reverse();
 }
 
@@ -148,7 +198,7 @@ export function thinkEnemy(w: World, t: Tank, dt: number): Intent {
   }
   if (target) {
     if (ai.lastTarget) {
-      const k = 0.12;
+      const k = 0.3;
       ai.targetVel.x += ((target.pos.x - ai.lastTarget.x) / dt - ai.targetVel.x) * k;
       ai.targetVel.y += ((target.pos.y - ai.lastTarget.y) / dt - ai.targetVel.y) * k;
     }
@@ -171,7 +221,9 @@ export function thinkEnemy(w: World, t: Tank, dt: number): Intent {
     const ang = Math.atan2(ps.y - t.pos.y, ps.x - t.pos.x) + ai.jitter;
     let found: number | null = null;
     const check = (an: number) => traceShot(w, t, an, a.bounces) === 'target';
+    const ang0 = Math.atan2(target.pos.y - t.pos.y, target.pos.x - t.pos.x);
     if (check(ang)) found = ang;
+    else if (check(ang0)) found = ang0; // 先読みが外れるときは素直に狙う
     else if (a.bounceSearch > 0 && a.bounces > 0 && ai.shotAngle === null) {
       // 跳弾射撃：全周を走査し、いま向いている角度に近い当たりを選ぶ
       const n = Math.round(36 + 108 * skill(a.bounceSearch));
@@ -224,31 +276,25 @@ export function thinkEnemy(w: World, t: Tank, dt: number): Intent {
 
   let dodge: Vec2 | null = null;
   if (!flee && a.speed > 0) {
-    let best: Bullet | null = null;
-    let bestT = Infinity;
-    let side = 1;
-    let ux = 0, uy = 0;
-    for (const b of w.bullets) {
-      if (b.ownerId === t.id && b.age < 0.3) continue;
-      const sp = Math.hypot(b.vel.x, b.vel.y);
-      const vx = b.vel.x / sp, vy = b.vel.y / sp;
-      const rx = t.pos.x - b.pos.x, ry = t.pos.y - b.pos.y;
-      const along = rx * vx + ry * vy;
-      if (along < 0 || along / sp > 0.9) continue;
-      const cross = vx * ry - vy * rx;
-      if (Math.abs(cross) > TANK_RADIUS + 0.35) continue;
-      if (!hasLine(st, b.pos, { x: b.pos.x + vx * along, y: b.pos.y + vy * along })) continue;
-      if (along / sp < bestT) { bestT = along / sp; best = b; side = cross >= 0 ? 1 : -1; ux = vx; uy = vy; }
-    }
-    if (best) {
-      if (ai.threatId !== best.id) {
-        ai.threatId = best.id;
+    const trajs = trajectories(w);
+    const still = clearance(trajs, t.id, t.pos, null, 0);
+    if (still < 0.22) {
+      if (ai.threatId === 0) {
+        ai.threatId = 1;
         ai.threatT = react;
         ai.threatDodge = rnd() < skill(a.dodge);
       }
       ai.threatT -= dt;
       if (ai.threatT <= 0 && ai.threatDodge) {
-        dodge = pickDir(st, t.pos, (dx, dy) => (ux * dy - uy * dx) * side - Math.abs(dx * ux + dy * uy) * 0.3);
+        // 16 方位それぞれに動いた場合の余裕を予測し、いちばん安全な方向へ（壁は避ける）
+        let bestC = still;
+        for (let i = 0; i < 16; i++) {
+          const an = (i / 16) * Math.PI * 2;
+          const dir = { x: Math.cos(an), y: Math.sin(an) };
+          if (!walkable(st, t.pos.x + dir.x * 0.6, t.pos.y + dir.y * 0.6)) continue;
+          const c = clearance(trajs, t.id, t.pos, dir, a.speed);
+          if (c > bestC + 0.02) { bestC = c; dodge = dir; }
+        }
       }
     } else ai.threatId = 0;
   }
@@ -258,8 +304,17 @@ export function thinkEnemy(w: World, t: Tank, dt: number): Intent {
     it.mx = steer.x; it.my = steer.y; it.move = true;
   } else if (a.speed > 0) {
     const holding = target && los && a.aggression > 0 && dist(target.pos, t.pos) < a.keepDist;
-    if (holding || ai.idleT > 0) {
-      // 止まって撃ち合う
+    if (holding) {
+      // 撃ち合い中は左右に動いて的を絞らせない（弾の予測に頼る敵ほどよく動く）
+      ai.strafeT -= dt;
+      if (ai.strafeT <= 0) { ai.strafeT = 0.5 + rnd() * 0.9; if (rnd() < 0.5) ai.strafeDir = -ai.strafeDir; }
+      const px = -(target!.pos.y - t.pos.y), py = target!.pos.x - t.pos.x;
+      const l = Math.hypot(px, py) || 1;
+      const dir = { x: (px / l) * ai.strafeDir, y: (py / l) * ai.strafeDir };
+      if (walkable(st, t.pos.x + dir.x * 0.7, t.pos.y + dir.y * 0.7)) { it.mx = dir.x; it.my = dir.y; it.move = true; }
+      else ai.strafeDir = -ai.strafeDir;
+    } else if (ai.idleT > 0) {
+      // 少し立ち止まる
     } else {
       if (ai.repathT <= 0 || ai.path.length === 0) {
         ai.path = planPath(w, t, target);

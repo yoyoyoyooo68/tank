@@ -55,6 +55,8 @@ export interface AiState {
   lastTarget: Vec2 | null;
   targetVel: Vec2;
   idleT: number;
+  strafeDir: number;
+  strafeT: number;
   intent: Intent;
 }
 
