@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 
-// GitHub Pages 公開時は base を '/<リポジトリ名>/' に変える
+// 相対パスで出力するので、GitHub Pages のサブパス（/tank/）でもそのまま動く
 export default defineConfig({
   base: './',
 });
