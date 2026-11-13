@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TANK BOUNCE</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #2b2118; }
+      canvas { display: block; width: 100vw; height: 100vh; cursor: none; }
+      #hud {
+        position: fixed; left: 16px; top: 12px; right: 16px;
+        display: flex; justify-content: space-between; pointer-events: none;
+        font: 600 14px/1.5 "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+        color: #f5e9d0; text-shadow: 0 2px 0 rgba(0,0,0,.45);
+        letter-spacing: .04em;
+      }
+      #hud b { font-size: 18px; letter-spacing: .08em; }
+      #banner {
+        position: fixed; left: 0; right: 0; top: 40%; text-align: center; pointer-events: none;
+        font: 800 44px/1.2 system-ui, sans-serif; color: #fff4d6;
+        text-shadow: 0 4px 0 rgba(0,0,0,.4); letter-spacing: .1em; opacity: 0; transition: opacity .25s;
+      }
+      #banner.on { opacity: 1; }
+      #hud.off { display: none; }
+
+      /* ---- メニュー ---- */
+      #menu {
+        position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+        background: radial-gradient(ellipse at center, rgba(30,18,8,.35), rgba(20,10,0,.72));
+        backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+        font-family: "Hiragino Maru Gothic ProN", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+        transition: opacity .25s;
+      }
+      #menu.hidden { opacity: 0; pointer-events: none; }
+      .menu-box { display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 16px; max-height: 100vh; box-sizing: border-box; }
+      .logo { text-align: center; line-height: 1; user-select: none; }
+      .logo-line { font: 900 min(11vw, 96px)/1.02 system-ui, "Arial Black", sans-serif; letter-spacing: .06em; }
+      .logo-line:nth-child(2) { font-size: min(8.4vw, 72px); margin-top: 2px; }
+      .logo-line span {
+        display: inline-block;
+        -webkit-text-stroke: 3px #2b1d12; paint-order: stroke fill;
+        text-shadow: 0 6px 0 #2b1d12, 0 10px 14px rgba(0,0,0,.35);
+        animation: bob 2.4s ease-in-out infinite;
+      }
+      @keyframes bob { 0%,100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(-6px) rotate(1deg); } }
+      .menu-heading { color: #fff4d6; font-weight: 800; font-size: 22px; letter-spacing: .1em; text-shadow: 0 3px 0 rgba(0,0,0,.45); }
+      .mlist { display: flex; flex-direction: column; gap: 12px; width: min(420px, 86vw); }
+      .mbtn {
+        --accent: #3b82f6;
+        position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+        padding: 12px 20px 14px 26px; border: 0; border-radius: 14px; cursor: pointer; text-align: left;
+        background: #fbf0d6; color: #3a2a1a; font-family: inherit;
+        box-shadow: inset 8px 0 0 var(--accent), 0 6px 0 #a98a5a, 0 10px 16px rgba(0,0,0,.35);
+        transition: transform .08s, box-shadow .08s, background .12s;
+      }
+      .mbtn:hover:not(:disabled), .mbtn:focus-visible { background: #fff8e4; transform: translateY(-2px); outline: none;
+        box-shadow: inset 12px 0 0 var(--accent), 0 8px 0 #a98a5a, 0 14px 18px rgba(0,0,0,.35); }
+      .mbtn:active:not(:disabled) { transform: translateY(4px); box-shadow: inset 8px 0 0 var(--accent), 0 2px 0 #a98a5a; }
+      .mbtn:disabled { cursor: not-allowed; background: #cfc3a8; color: #7b6e58; box-shadow: inset 8px 0 0 #a39578, 0 6px 0 #8c7f63; }
+      .mbtn-label { font-size: 22px; font-weight: 800; letter-spacing: .08em; }
+      .mbtn-sub { font-size: 12.5px; opacity: .72; letter-spacing: .03em; }
+      .mbtn-badge { position: absolute; right: 14px; top: 12px; background: #6b5d48; color: #fff4d6; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 99px; }
+      .menu-foot { color: rgba(255,244,214,.7); font-size: 12px; letter-spacing: .06em; }
+      .howto { width: min(480px, 88vw); box-sizing: border-box; background: #fbf0d6; border-radius: 14px; padding: 16px 20px; color: #3a2a1a;
+        box-shadow: 0 6px 0 #a98a5a, 0 10px 16px rgba(0,0,0,.35); font-size: 14px; }
+      .howto-row { display: flex; gap: 14px; align-items: baseline; padding: 4px 0; }
+      .howto-row kbd { flex: 0 0 140px; font: 700 13px system-ui; background: #fff; border: 1px solid #c9b48a; border-bottom-width: 3px; border-radius: 6px; padding: 2px 8px; text-align: center; }
+      .howto-tip { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #c9b48a; line-height: 1.6; opacity: .85; }
+      @media (max-height: 860px) {
+        .menu-box { gap: 12px; }
+        .logo-line { font-size: min(11vw, 56px); }
+        .logo-line:nth-child(2) { font-size: min(8.4vw, 42px); }
+        .logo-line span { -webkit-text-stroke-width: 2px; text-shadow: 0 4px 0 #2b1d12; }
+        .mlist { gap: 8px; }
+        .mbtn { padding: 7px 18px 9px 24px; border-radius: 12px; }
+        .mbtn-label { font-size: 18px; }
+        .mbtn-sub { font-size: 11px; }
+        .menu-heading { font-size: 18px; }
+      }
+      .howto-dots { display: flex; gap: 6px; margin-top: 10px; }
+      .dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #3a2a1a; box-sizing: border-box; }
+      .menu-notice { background: #fff1c9; color: #6b3d00; border-radius: 10px; padding: 8px 16px; font-size: 13.5px; font-weight: 700; max-width: min(460px, 86vw); text-align: center; box-shadow: 0 3px 0 #c9a45a; }
+      .room-code { font: 900 min(12vw, 64px)/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .18em; padding: 10px 6px 10px 22px; background: #fbf0d6; color: #3a2a1a; border-radius: 14px; cursor: pointer; user-select: all; box-shadow: 0 6px 0 #a98a5a, 0 10px 16px rgba(0,0,0,.35); }
+      .room-code-sub { color: rgba(255,244,214,.8); font-size: 12px; letter-spacing: .05em; margin-top: -10px; }
+      .code-input { width: min(300px, 80vw); box-sizing: border-box; text-align: center; font: 900 40px/1.2 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .2em; padding: 10px 8px 10px 20px; border: 0; border-radius: 14px; background: #fbf0d6; color: #3a2a1a; box-shadow: inset 0 0 0 3px #a98a5a, 0 10px 16px rgba(0,0,0,.35); outline: none; text-transform: uppercase; }
+      .code-input:focus { box-shadow: inset 0 0 0 3px #3b82f6, 0 10px 16px rgba(0,0,0,.35); }
+      .players { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 92vw; }
+      .player-chip { --c: #888; padding: 7px 14px; border-radius: 99px; background: #fbf0d6; color: #3a2a1a; font-weight: 800; font-size: 13.5px; box-shadow: inset 0 0 0 3px var(--c), 0 3px 0 #a98a5a; }
+      .player-chip.empty { background: rgba(251,240,214,.25); color: rgba(255,244,214,.55); box-shadow: inset 0 0 0 2px rgba(255,244,214,.25); font-weight: 600; }
+      .seg { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: 92vw; }
+      .seg-label { color: #fff4d6; font-weight: 800; font-size: 13px; margin-right: 4px; letter-spacing: .06em; }
+      .segbtn { border: 0; border-radius: 99px; padding: 6px 14px; font: 800 13px/1 inherit; font-family: inherit; background: rgba(251,240,214,.9); color: #3a2a1a; cursor: pointer; box-shadow: 0 3px 0 #a98a5a; }
+      .segbtn.on { background: #3b82f6; color: #fff; box-shadow: 0 3px 0 #1f4e99; }
+      .segbtn:disabled { cursor: default; }
+      .segbtn:disabled:not(.on) { opacity: .55; }
+      .seg-info { color: rgba(255,244,214,.85); font-size: 12.5px; margin-top: -8px; }
+      #banner small { display: block; font-size: 16px; font-weight: 600; margin-top: 8px; letter-spacing: .06em; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <div><b>TANK BOUNCE</b><br /><span id="hud-stage"></span></div>
+      <div style="text-align:right">
+        <span id="hud-kills"></span><br />
+        <span id="hud-help" style="opacity:.75">WASD 移動 / マウス 照準 / Space・クリック 発射 / Enter 爆弾 / R 新しいステージ</span>
+      </div>
+    </div>
+    <div id="banner"></div>
+    <div id="menu"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
